@@ -1,0 +1,126 @@
+$AAPL: possibly delisted; no price data found  (period=1mo)
+compounderos_app/test_scanner_service.py::test_evaluate_symbol_standalone_routes_through_yf_gateway FAILED
+compounderos_app/test_scanner_service.py::test_fetch_sp500_universe_uses_token_bucket_and_db_fallback FAILED
+compounderos_app/test_scanner_service.py::test_ingress_static_and_ui_routes_under_starlette FAILED
+compounderos_app/test_scanner_service.py::test_scanner_pipeline_pick_next_symbol_no_historical_starvation_and_watchlist FAILED
+compounderos_app/test_scanner_service.py::test_scanner_pipeline_worker_records_failure_when_evaluate_returns_false FAILED
+
+============================================================
+FAILURES / ERRORS
+============================================================
+--- compounderos_app/test_scanner_service.py::test_evaluate_symbol_standalone_routes_through_yf_gateway ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/requests/session.py", line 732, in _request_once
+    c.perform()
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/curl.py", line 505, in perform
+    self._check_error(ret, "perform")
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/curl.py", line 269, in _check_error
+    raise error
+curl_cffi.curl.CurlError: Failed to perform, curl: (6) Could not resolve host: query1.finance.yahoo.com. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_scanner_service.py", line 252, in test_evaluate_symbol_standalone_routes_through_yf_gateway
+    ok = sp500_scanner.evaluate_symbol(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/nithinkamath/CompounderOSv2/sp500_scanner.py", line 179, in evaluate_symbol
+    info = t.info or {}
+           ^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/ticker.py", line 159, in info
+    return self.get_info()
+           ^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/base.py", line 282, in get_info
+    data = self._quote.info
+           ^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/scrapers/quote.py", line 524, in info
+    self._fetch_info()
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/scrapers/quote.py", line 682, in _fetch_info
+    result = self._fetch(modules=modules)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/scrapers/quote.py", line 658, in _fetch
+    result = self._data.get_raw_json(_QUOTE_SUMMARY_URL_ + f"/{self._symbol}", params=params_dict)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 509, in get_raw_json
+    response = self.get(url, params=params, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 422, in get
+    response = self._make_request(url, request_method = self._session.get, params=params, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 456, in _make_request
+    crumb, strategy = self._get_cookie_and_crumb()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 412, in _get_cookie_and_crumb
+    crumb = self._get_cookie_and_crumb_basic(timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 293, in _get_cookie_and_crumb_basic
+    return self._get_crumb_basic(timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/yfinance/data.py", line 276, in _get_crumb_basic
+    crumb_response = self._session.get(**get_args)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/requests/session.py", line 842, in get
+    return self.request(method="GET", url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/requests/session.py", line 795, in request
+    return self._request_once(
+           ^^^^^^^^^^^^^^^^^^^
+  File "/tmp/py312/lib/python3.12/site-packages/curl_cffi/requests/session.py", line 739, in _request_once
+    raise error(str(e), e.code, rsp) from e
+curl_cffi.requests.exceptions.DNSError: Failed to perform, curl: (6) Could not resolve host: query1.finance.yahoo.com. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+
+--- compounderos_app/test_scanner_service.py::test_fetch_sp500_universe_uses_token_bucket_and_db_fallback ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_scanner_service.py", line 181, in test_fetch_sp500_universe_uses_token_bucket_and_db_fallback
+    universe = sp500_scanner.fetch_sp500_universe(store, bucket=bucket)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: fetch_sp500_universe() got an unexpected keyword argument 'bucket'
+
+--- compounderos_app/test_scanner_service.py::test_ingress_static_and_ui_routes_under_starlette ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_scanner_service.py", line 55, in test_ingress_static_and_ui_routes_under_starlette
+    assert status == 200
+           ^^^^^^^^^^^^^
+AssertionError
+
+--- compounderos_app/test_scanner_service.py::test_scanner_pipeline_pick_next_symbol_no_historical_starvation_and_watchlist ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_scanner_service.py", line 128, in test_scanner_pipeline_pick_next_symbol_no_historical_starvation_and_watchlist
+    assert picked1[0] == "SHOP"
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+--- compounderos_app/test_scanner_service.py::test_scanner_pipeline_worker_records_failure_when_evaluate_returns_false ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_scanner_service.py", line 160, in test_scanner_pipeline_worker_records_failure_when_evaluate_returns_false
+    assert "BADTICK" in pipeline.failures
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+
+=== 0 passed, 0 skipped, 5 failed ===

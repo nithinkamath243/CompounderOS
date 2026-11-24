@@ -1,0 +1,339 @@
+commit 60f37ad76e25ea8097be524a41e5061c0008c214
+Author: Nithin <nithinkamat@gmail.com>
+Date:   Tue Oct 27 13:05:12 2026 -0700
+
+    CPOS-E-011,E-012,E-013,E-027,E-028: Enforce snapshot monotonicity, trajectory raw_inputs immutability, and full provenance columns
+    
+    Ledger IDs: E-011, E-012, E-013, E-027, E-028
+    - Enforce same-day confidence monotonicity on sp500_scores snapshot writes in DataStore.record_quality_result (E-011).
+    - Pass unmutated raw_dict to record_trajectory_result in ScannerPipeline._run_trajectory_stage so trajectory_history.raw_inputs_json is never polluted with derived peer keys (E-012).
+    - Add additive registry_id and registry_hash columns to sp500_scores and registry_id to sp500_scores_history, stamp them on writes, and enforce registry_hash == CANONICAL_REGISTRY_HASH in the canonical write-guard (E-013, E-027, E-028).
+    - Add regression tests in compounderos_app/test_lens_boundary_invariant.py.
+
+ compounderos_app/database.py                     | 108 ++++++++++++++++++-----
+ compounderos_app/test_lens_boundary_invariant.py |  96 ++++++++++++++++++++
+ scanner_service/pipeline.py                      |   4 +-
+ 3 files changed, 185 insertions(+), 23 deletions(-)
+diff --git a/compounderos_app/database.py b/compounderos_app/database.py
+index da89191..6898e74 100644
+--- a/compounderos_app/database.py
++++ b/compounderos_app/database.py
+@@ -18,6 +18,22 @@ class DataStore:
+         self._migrate_v6()
+         self._migrate_v7()
+         self._migrate_v8()
++        self._ensure_provenance_columns()
++
++    def _ensure_provenance_columns(self):
++        with self.lock:
++            cur = self.conn.cursor()
++            for table, col_def in [
++                ("sp500_scores_history", "registry_id TEXT"),
++                ("sp500_scores_history", "registry_hash TEXT"),
++                ("sp500_scores", "registry_id TEXT"),
++                ("sp500_scores", "registry_hash TEXT"),
++            ]:
++                try:
++                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
++                except sqlite3.OperationalError:
++                    pass
++            self.conn.commit()
+ 
+     def _require_replica(self):
+         if self.role != "replica":
+@@ -34,7 +50,9 @@ class DataStore:
+                     composite_shrunk REAL,
+                     verdict TEXT,
+                     model TEXT,
+-                    evaluated_at TEXT
++                    evaluated_at TEXT,
++                    registry_id TEXT,
++                    registry_hash TEXT
+                 )
+             """)
+             cur.execute("""
+@@ -64,6 +82,7 @@ class DataStore:
+                     source            TEXT NOT NULL DEFAULT 'scan' CHECK (source IN ('scan','seeded','vendor')),
+                     raw_json          TEXT,
+                     subscores_json    TEXT,
++                    registry_id       TEXT,
+                     registry_hash     TEXT,
+                     PRIMARY KEY (symbol, scan_date)
+                 )
+@@ -446,10 +465,21 @@ class DataStore:
+         verdict: str = "SCORED",
+     ):
+         from datetime import datetime, timezone
+-        from compounderos_app.scoring_engine import CANONICAL_REGISTRY_ID, ENGINE_VERSION
++        from compounderos_app.scoring_engine import (
++            CANONICAL_REGISTRY_HASH,
++            CANONICAL_REGISTRY_ID,
++            ENGINE_VERSION,
++        )
+ 
+-        if result is not None and getattr(result, "registry_id", "canonical") != CANONICAL_REGISTRY_ID:
+-            raise ValueError("Write-guard error: Cannot persist custom lens result to canonical tables.")
++        if result is not None:
++            reg_id = getattr(result, "registry_id", CANONICAL_REGISTRY_ID)
++            reg_hash = getattr(result, "registry_hash", "")
++            if reg_id != CANONICAL_REGISTRY_ID or (
++                reg_hash not in ("", None, CANONICAL_REGISTRY_HASH)
++            ):
++                raise ValueError(
++                    "Write-guard error: Cannot persist custom lens result to canonical tables."
++                )
+ 
+         def _to_float(val):
+             if val is None:
+@@ -462,19 +492,31 @@ class DataStore:
+ 
+             try:
+                 if result is None:
+-                    if write_snapshot:
++                    existing_null = self.conn.execute(
++                        "SELECT confidence FROM sp500_scores_history WHERE symbol = ? AND scan_date = ?",
++                        (symbol, scan_date),
++                    ).fetchone()
++                    if write_snapshot and existing_null is None:
+                         self.conn.execute(
+-                            "REPLACE INTO sp500_scores (symbol, sector, score, composite_shrunk, verdict, model, evaluated_at) VALUES (?, ?, NULL, NULL, ?, ?, ?)",
+-                            (symbol, sector, verdict, ENGINE_VERSION, now_iso),
++                            "REPLACE INTO sp500_scores (symbol, sector, score, composite_shrunk, verdict, model, evaluated_at, registry_id, registry_hash) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
++                            (
++                                symbol,
++                                sector,
++                                verdict,
++                                ENGINE_VERSION,
++                                now_iso,
++                                CANONICAL_REGISTRY_ID,
++                                CANONICAL_REGISTRY_HASH,
++                            ),
+                         )
+                     self.conn.execute(
+                         """INSERT OR IGNORE INTO sp500_scores_history 
+                            (symbol, scan_date, evaluated_at, sector, score, score_pre_gate, composite_shrunk,
+                             b_profitability, b_efficiency, b_balance_sheet, b_capital_alloc,
+                             confidence, gate_state, gates_fired, gates_unverified, gate_cap_applied, verdict,
+-                            pe_trailing, pe_forward, fcf_yield, market_cap, engine_version, source, raw_json, subscores_json, registry_hash)
+-                           VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0.0, 'unverified', '', '', NULL, ?, NULL, NULL, NULL, NULL, ?, 'scan', '{}', '{}', '')""",
+-                        (symbol, scan_date, now_iso, sector, verdict, ENGINE_VERSION),
++                            pe_trailing, pe_forward, fcf_yield, market_cap, engine_version, source, raw_json, subscores_json, registry_id, registry_hash)
++                           VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0.0, 'unverified', '', '', NULL, ?, NULL, NULL, NULL, NULL, ?, 'scan', '{}', '{}', ?, '')""",
++                        (symbol, scan_date, now_iso, sector, verdict, ENGINE_VERSION, CANONICAL_REGISTRY_ID),
+                     )
+                     self.conn.commit()
+                     return
+@@ -497,9 +539,29 @@ class DataStore:
+                 b_bal = result.buckets.get("balance_sheet")
+                 b_cap = result.buckets.get("capital_alloc")
+ 
+-                if write_snapshot:
++                pe_trailing_val = _to_float(multiples.get("trailing_pe"))
++                pe_forward_val = _to_float(multiples.get("forward_pe"))
++                fcf_yield_val = _to_float(multiples.get("fcf_yield"))
++                market_cap_val = _to_float(multiples.get("market_cap"))
++
++                raw_json_str = json.dumps(raw)
++                subscores_json_str = json.dumps(subscores)
++                reg_id_val = getattr(result, "registry_id", None) or CANONICAL_REGISTRY_ID
++                reg_hash_val = getattr(result, "registry_hash", None) or CANONICAL_REGISTRY_HASH
++
++                existing_hist = self.conn.execute(
++                    "SELECT confidence FROM sp500_scores_history WHERE symbol = ? AND scan_date = ?",
++                    (symbol, scan_date),
++                ).fetchone()
++                allow_snapshot_update = existing_hist is None or (
++                    result.confidence >= existing_hist[0]
++                    and result.composite is not None
++                    and raw_json_str != "{}"
++                )
++
++                if write_snapshot and allow_snapshot_update:
+                     self.conn.execute(
+-                        "REPLACE INTO sp500_scores (symbol, sector, score, composite_shrunk, verdict, model, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
++                        "REPLACE INTO sp500_scores (symbol, sector, score, composite_shrunk, verdict, model, evaluated_at, registry_id, registry_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (
+                             symbol,
+                             sector,
+@@ -508,6 +570,8 @@ class DataStore:
+                             verdict,
+                             result.engine_version,
+                             now_iso,
++                            reg_id_val,
++                            reg_hash_val,
+                         ),
+                     )
+ 
+@@ -516,8 +580,8 @@ class DataStore:
+                        (symbol, scan_date, evaluated_at, sector, score, score_pre_gate, composite_shrunk,
+                         b_profitability, b_efficiency, b_balance_sheet, b_capital_alloc,
+                         confidence, gate_state, gates_fired, gates_unverified, gate_cap_applied, verdict,
+-                        pe_trailing, pe_forward, fcf_yield, market_cap, engine_version, source, raw_json, subscores_json, registry_hash)
+-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scan', ?, ?, ?)
++                        pe_trailing, pe_forward, fcf_yield, market_cap, engine_version, source, raw_json, subscores_json, registry_id, registry_hash)
++                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scan', ?, ?, ?, ?)
+                        ON CONFLICT (symbol, scan_date) DO UPDATE SET
+                             evaluated_at = excluded.evaluated_at,
+                             sector = excluded.sector,
+@@ -542,6 +606,7 @@ class DataStore:
+                             source = excluded.source,
+                             raw_json = excluded.raw_json,
+                             subscores_json = excluded.subscores_json,
++                            registry_id = excluded.registry_id,
+                             registry_hash = excluded.registry_hash
+                        WHERE excluded.confidence >= sp500_scores_history.confidence
+                          AND excluded.score IS NOT NULL
+@@ -565,14 +630,15 @@ class DataStore:
+                         unver_str,
+                         result.gate_cap_applied,
+                         verdict,
+-                        _to_float(multiples.get("trailing_pe")),
+-                        _to_float(multiples.get("forward_pe")),
+-                        _to_float(multiples.get("fcf_yield")),
+-                        _to_float(multiples.get("market_cap")),
++                        pe_trailing_val,
++                        pe_forward_val,
++                        fcf_yield_val,
++                        market_cap_val,
+                         result.engine_version,
+-                        json.dumps(raw),
+-                        json.dumps(subscores),
+-                        result.registry_hash,
++                        raw_json_str,
++                        subscores_json_str,
++                        reg_id_val,
++                        reg_hash_val,
+                     ),
+                 )
+                 self.conn.commit()
+diff --git a/compounderos_app/test_lens_boundary_invariant.py b/compounderos_app/test_lens_boundary_invariant.py
+index 033876d..de9c4b2 100644
+--- a/compounderos_app/test_lens_boundary_invariant.py
++++ b/compounderos_app/test_lens_boundary_invariant.py
+@@ -302,6 +302,98 @@ def test_golden_over_real_history():
+     )
+ 
+ 
++def test_write_guard_blocks_spoofed_registry_hash_and_persists_provenance():
++    store = DataStore(":memory:")
++    canon = E.score_metrics(_SAMPLE_RAW)
++    store.record_quality_result("AAPL", "IT", canon, {}, dict(_SAMPLE_RAW))
++
++    hist_row = store.conn.execute(
++        "SELECT registry_id, registry_hash FROM sp500_scores_history WHERE symbol='AAPL'"
++    ).fetchone()
++    assert hist_row[0] == E.CANONICAL_REGISTRY_ID
++    assert hist_row[1] == E.CANONICAL_REGISTRY_HASH
++
++    snap_row = store.conn.execute(
++        "SELECT registry_id, registry_hash FROM sp500_scores WHERE symbol='AAPL'"
++    ).fetchone()
++    assert snap_row[0] == E.CANONICAL_REGISTRY_ID
++    assert snap_row[1] == E.CANONICAL_REGISTRY_HASH
++
++    # Spoofed ScoreResult with canonical registry_id but non-canonical registry_hash must be rejected
++    spoofed = replace(canon, registry_id=E.CANONICAL_REGISTRY_ID, registry_hash="deadbeef" * 8)
++    assert _raises(
++        ValueError,
++        lambda: store.record_quality_result("AAPL", "IT", spoofed, {}, dict(_SAMPLE_RAW)),
++    )
++    store.close()
++
++
++def test_snapshot_confidence_monotonicity_same_day():
++    store = DataStore(":memory:")
++    high_conf = E.score_metrics(_SAMPLE_RAW)
++    # Partial raw dict with lower confidence
++    low_raw = {"roic": 0.10, "gross_margin": 0.30}
++    low_conf = E.score_metrics(low_raw)
++    assert low_conf.confidence < high_conf.confidence
++
++    store.record_quality_result("MSFT", "IT", high_conf, {}, dict(_SAMPLE_RAW))
++    store.record_quality_result("MSFT", "IT", low_conf, {}, dict(low_raw))
++
++    snap_score = store.conn.execute(
++        "SELECT score FROM sp500_scores WHERE symbol='MSFT'"
++    ).fetchone()[0]
++    hist_score = store.conn.execute(
++        "SELECT score FROM sp500_scores_history WHERE symbol='MSFT'"
++    ).fetchone()[0]
++    assert _approx(snap_score, high_conf.composite)
++    assert _approx(hist_score, high_conf.composite)
++    store.close()
++
++
++def test_pipeline_trajectory_stage_preserves_pure_raw_inputs():
++    import threading
++    from unittest.mock import patch
++    from scanner_service.pipeline import ScannerPipeline
++
++    store = DataStore(":memory:", role="sor", check_same_thread=False)
++    stop_event = threading.Event()
++    pipeline = ScannerPipeline(store, {}, stop_event)
++    peers = ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM"]
++    pipeline.universe = [(sym, "Information Technology", "Systems Software") for sym in peers]
++
++    pure_raw = {
++        "extraction_version": "traj-ext-1.1",
++        "quarters_available": 12,
++        "roic_current": 0.25,
++        "roic_4q_ago": 0.20,
++        "roic_8q_ago": 0.18,
++        "margin_current": 0.30,
++        "margin_4q_ago": 0.27,
++        "rev_growth_current": 0.15,
++        "rev_growth_4q_ago": 0.12,
++        "eps_fy1_current": 5.50,
++        "eps_fy1_90d_ago": 5.00,
++    }
++
++    with patch.object(
++        pipeline.gateway, "fetch_estimates", lambda sym: {}
++    ), patch(
++        "compounderos_app.trajectory_extraction.extract_trajectory_inputs",
++        lambda *a, **kw: dict(pure_raw),
++    ):
++        ok = pipeline._run_trajectory_stage()
++        assert ok is True
++
++    row = store.conn.execute(
++        "SELECT raw_inputs_json, derived_json FROM trajectory_history WHERE symbol='AAPL'"
++    ).fetchone()
++    assert row is not None
++    stored_raw = json.loads(row[0])
++    for derived_key in ("median_revision", "breadth", "median_peer_growth", "peer_n", "peer_pos_n"):
++        assert derived_key not in stored_raw, f"Derived peer key {derived_key} polluted raw_inputs_json"
++    store.close()
++
++
+ if __name__ == "__main__":
+     test_golden_synthetic()
+     test_lens_moves_score_but_confidence_and_gates_invariant()
+@@ -312,5 +404,9 @@ if __name__ == "__main__":
+     test_validate_lens_contract()
+     test_lens_table_recomputes_hash_and_rejects_invalid()
+     test_trajectory_choke_point()
++    test_write_guard_blocks_spoofed_registry_hash_and_persists_provenance()
++    test_snapshot_confidence_monotonicity_same_day()
++    test_pipeline_trajectory_stage_preserves_pure_raw_inputs()
+     print("synthetic + enforcement invariants OK — set COMPOUNDEROS_DB and run under "
+           "pytest for the real-history golden guard")
++
+diff --git a/scanner_service/pipeline.py b/scanner_service/pipeline.py
+index 71be239..108c042 100644
+--- a/scanner_service/pipeline.py
++++ b/scanner_service/pipeline.py
+@@ -431,11 +431,11 @@ class ScannerPipeline:
+                     composition=comp,
+                     granularity=granularity_used,
+                     peer_set=sorted(peer_symbols),
+-                    raw_inputs=symbol_raw,
++                    raw_inputs=raw_dict,
+                     engine_version=TRAJ_ENGINE_VERSION,
+                     peer_state=peer_state,
+                     derived_json=derived,
+-                    extraction_version=symbol_raw.get("extraction_version"),
++                    extraction_version=raw_dict.get("extraction_version"),
+                 )
+             except Exception as e:
+                 logger.error(f"Trajectory write failed for {sym}: {e}")

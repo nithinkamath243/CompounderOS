@@ -1,0 +1,30 @@
+WARNING:root:Universe fetch failed (empty response from Wikipedia); falling back to 1 cached ticker_map symbols
+WARNING:scanner_service.web.views:UI access rejected: Client IP 10.0.0.99 does not match Supervisor IP 172.30.32.2
+compounderos_app/test_scanner_service.py::test_evaluate_symbol_standalone_routes_through_yf_gateway PASSED
+compounderos_app/test_scanner_service.py::test_fetch_sp500_universe_uses_token_bucket_and_db_fallback PASSED
+compounderos_app/test_scanner_service.py::test_ingress_static_and_ui_routes_under_starlette PASSED
+compounderos_app/test_scanner_service.py::test_scanner_pipeline_pick_next_symbol_no_historical_starvation_and_watchlist PASSED
+compounderos_app/test_scanner_service.py::test_scanner_pipeline_worker_records_failure_when_evaluate_returns_false PASSED
+compounderos_app/test_imports.py::test_imports PASSED
+compounderos_app/test_v2_core.py::test_dip_trigger_corrupt_spike_robust_z PASSED
+compounderos_app/test_v2_core.py::test_dip_trigger_flat_mad_guard PASSED
+compounderos_app/test_v2_core.py::test_f_b5_wiring_proof_gate PASSED
+compounderos_app/test_v2_core.py::test_incremental_roic_capital_returning PASSED
+compounderos_app/test_v2_core.py::test_score_backtester_empty_store_returns_insufficient_sample PASSED
+compounderos_app/test_v2_core.py::test_score_backtester_rank_ic_newey_west PASSED
+compounderos_app/test_v2_core.py::test_v10_gate_combined_state PASSED
+compounderos_app/test_v2_core.py::test_v13_evaluated_at_lexicographic PASSED
+compounderos_app/test_v2_core.py::test_v1_same_day_rescan PASSED
+compounderos_app/test_v2_core.py::test_v2_forced_failure_atomicity PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_bucket_weights_frozen PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_golden_over_real_history SKIPPED (set COMPOUNDEROS_DB to run the real-history golden check)
+compounderos_app/test_lens_boundary_invariant.py::test_golden_synthetic PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_lens_moves_score_but_confidence_and_gates_invariant PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_lens_table_recomputes_hash_and_rejects_invalid PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_no_global_mutation_after_lens PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_provenance_stamping PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_trajectory_choke_point PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_validate_lens_contract PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_write_guard_blocks_lens_scores PASSED
+
+=== 25 passed, 1 skipped, 0 failed ===

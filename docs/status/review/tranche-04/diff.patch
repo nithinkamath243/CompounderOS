@@ -1,0 +1,1281 @@
+commit c33fdf67576bec5b52e08a0f69358c52f592acfa
+Author: Nithin <nithinkamat@gmail.com>
+Date:   Tue Oct 27 13:14:46 2026 -0700
+
+    CPOS-E-035,E-037,E-038: Decouple ChartRenderer via ChartPayload dataclass and clean up .gitignore and diag_gemini
+    
+    Ledger-ID: E-035, E-037, E-038
+    Source: Source A (Phase 4 Prompt Index), Source B (Audit Findings), Source F (Codebase Scan)
+    Before-Status: PENDING (E-035), PARTIAL (E-037, E-038)
+    After-Status: IMPLEMENTED-VERIFIED
+    Tests-Added: compounderos_app/test_charts_payload.py::test_chart_payload_dataclass_and_no_self_app_in_renderer, compounderos_app/test_charts_payload.py::test_diag_gemini_uses_canonical_config_path, compounderos_app/test_charts_payload.py::test_gitignore_covers_build_artifacts
+    Tests-Run: pytest compounderos_app/test_charts_payload.py compounderos_app/test_lens_boundary_invariant.py compounderos_app/test_scanner_service.py compounderos_app/test_imports.py compounderos_app/test_v2_core.py — 31 passed, 1 skipped, 0 failed
+    Gates-Checked: none
+
+diff --git a/.gitignore b/.gitignore
+index 44aedcd..6132599 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -18,3 +18,15 @@ exports/
+ 
+ # Generated icon
+ assets/compounderos_icon.icns
++
++# Virtual environments & build artifacts
++venv/
++build/
++dist/
++.pytest_cache/
++.hypothesis/
++repomix-output.xml
++sp500_scanner.db
++sp500_scanner.db-shm
++sp500_scanner.db-wal
++
+diff --git a/compounderos_app/charts.py b/compounderos_app/charts.py
+index 09dcc2b..b80f7d9 100644
+--- a/compounderos_app/charts.py
++++ b/compounderos_app/charts.py
+@@ -1,8 +1,11 @@
++from dataclasses import dataclass
++from typing import Any, Callable, Optional, Union
+ import matplotlib.animation as animation
+ import matplotlib.dates as mdates
+ import numpy as np
+ import pandas as pd
+-from typing import Optional
++
++from .analysis import _pick_series, safe_div
+ 
+ CHART_OPTIONS = [
+     "Price",
+@@ -116,9 +119,95 @@ def dividend_series(divs: Optional[pd.Series], freq: str):
+     s.index = s.index.to_timestamp()
+     return s
+ 
++
++@dataclass(frozen=True)
++class ChartPayload:
++    fig: Any
++    ax: Any
++    mode: str = "Price"
++    freq: str = "Quarterly"
++    price_range: str = "1Y"
++    hist_period: Optional[str] = "1y"
++    hist_data: Optional[pd.DataFrame] = None
++    hist_data_long: Optional[pd.DataFrame] = None
++    df_fin_q: Optional[pd.DataFrame] = None
++    df_fin_a: Optional[pd.DataFrame] = None
++    df_bal_q: Optional[pd.DataFrame] = None
++    df_bal_a: Optional[pd.DataFrame] = None
++    df_cf_q: Optional[pd.DataFrame] = None
++    df_cf_a: Optional[pd.DataFrame] = None
++    df_dividends: Optional[pd.Series] = None
++    anim_enabled: bool = False
++    on_reset: Optional[Callable[[], None]] = None
++    on_price_change: Optional[Callable[[str, Optional[str]], None]] = None
++    on_ensure_history_period: Optional[Callable[[str], None]] = None
++    on_analysis: Optional[Callable[[str, str], None]] = None
++    on_draw_idle: Optional[Callable[[], None]] = None
++    on_anim_created: Optional[Callable[[Any], None]] = None
++    on_ax2_created: Optional[Callable[[Any], None]] = None
++
++    @classmethod
++    def from_app(cls, app: Any) -> "ChartPayload":
++        def _reset_app():
++            app._redraw_job = None
++            if hasattr(app, "txt_chart_ai"):
++                app._update_chart_ai("Refreshing chart insights...")
++            if getattr(app, "anim", None) and app.anim.event_source:
++                try:
++                    app.anim.event_source.stop()
++                except Exception:
++                    pass
++            app.anim = None
++            if getattr(app, "_ax2", None) is not None:
++                try:
++                    app._ax2.remove()
++                except Exception:
++                    pass
++                app._ax2 = None
++            if hasattr(app, "lbl_price_change"):
++                app.lbl_price_change.configure(text="")
++
++        def _price_change(text: str, text_color: Optional[str] = None):
++            if hasattr(app, "lbl_price_change"):
++                if text_color is not None:
++                    app.lbl_price_change.configure(text=text, text_color=text_color)
++                else:
++                    app.lbl_price_change.configure(text=text)
++
++        return cls(
++            fig=app.fig,
++            ax=app.ax,
++            mode=app.chart_var.get() if hasattr(app, "chart_var") else "Price",
++            freq=app.freq_var.get() if hasattr(app, "freq_var") else "Quarterly",
++            price_range=app.price_range_var.get() if hasattr(app, "price_range_var") else "1Y",
++            hist_period=getattr(app, "hist_period", "1y"),
++            hist_data=getattr(app, "hist_data", None),
++            hist_data_long=getattr(app, "hist_data_long", None),
++            df_fin_q=getattr(app, "df_fin_q", None),
++            df_fin_a=getattr(app, "df_fin_a", None),
++            df_bal_q=getattr(app, "df_bal_q", None),
++            df_bal_a=getattr(app, "df_bal_a", None),
++            df_cf_q=getattr(app, "df_cf_q", None),
++            df_cf_a=getattr(app, "df_cf_a", None),
++            df_dividends=getattr(app, "df_dividends", None),
++            anim_enabled=bool(app.anim_enabled.get()) if hasattr(app, "anim_enabled") else False,
++            on_reset=_reset_app,
++            on_price_change=_price_change,
++            on_ensure_history_period=getattr(app, "ensure_history_period", None),
++            on_analysis=getattr(app, "_set_chart_analysis", None),
++            on_draw_idle=app.canvas.draw_idle if hasattr(app, "canvas") else None,
++            on_anim_created=lambda anim_obj: setattr(app, "anim", anim_obj),
++            on_ax2_created=lambda ax2_obj: setattr(app, "_ax2", ax2_obj),
++        )
++
++
+ class ChartRenderer:
+-    def __init__(self, app, *, palette, anim_frames: int):
+-        self.app = app
++    def __init__(self, payload: Union[ChartPayload, Any], *, palette, anim_frames: int):
++        self.payload: ChartPayload = (
++            payload if isinstance(payload, ChartPayload) else ChartPayload.from_app(payload)
++        )
++        self._ax2 = None
++        self.anim = None
+         self.C_ACCENT = palette["C_ACCENT"]
+         self.C_BORDER = palette["C_BORDER"]
+         self.C_GREEN = palette["C_GREEN"]
+@@ -132,6 +221,31 @@ class ChartRenderer:
+         self.C_SERIES_NEUTRAL = palette["C_SERIES_NEUTRAL"]
+         self.anim_frames = anim_frames
+ 
++    def _get_series(self, df: Optional[pd.DataFrame], keys) -> Optional[pd.Series]:
++        return _pick_series(df, keys)
++
++    def _get_freq_df(self, kind: str, freq: str) -> Optional[pd.DataFrame]:
++        is_annual = freq == "Annual"
++        if kind == "fin":
++            return self.payload.df_fin_a if is_annual else self.payload.df_fin_q
++        if kind == "bal":
++            return self.payload.df_bal_a if is_annual else self.payload.df_bal_q
++        if kind == "cf":
++            return self.payload.df_cf_a if is_annual else self.payload.df_cf_q
++        return None
++
++    def _create_ax2(self):
++        ax2 = self.payload.ax.twinx()
++        self._ax2 = ax2
++        if self.payload.on_ax2_created:
++            self.payload.on_ax2_created(ax2)
++        return ax2
++
++    def _set_anim(self, anim_obj):
++        self.anim = anim_obj
++        if self.payload.on_anim_created:
++            self.payload.on_anim_created(anim_obj)
++
+     def _freq_code(self, freq: str):
+         return "Y" if freq == "Annual" else "Q"
+ 
+@@ -147,7 +261,7 @@ class ChartRenderer:
+             spine.set_linewidth(1.0)
+ 
+     def style_axes(self, title=None, y_label=None):
+-        ax = self.app.ax
++        ax = self.payload.ax
+         ax.set_facecolor(self.C_BG_CARD)
+         ax.grid(True, linestyle="--", alpha=0.18)
+         self.apply_axes_frame(ax)
+@@ -158,7 +272,7 @@ class ChartRenderer:
+             ax.set_ylabel(y_label, color=self.C_TEXT_SUB)
+ 
+     def set_period_ticks(self, x_idx, labels, max_ticks=8):
+-        ax = self.app.ax
++        ax = self.payload.ax
+         if len(labels) == 0:
+             return
+         step = max(1, int(len(labels) / max_ticks))
+@@ -168,14 +282,15 @@ class ChartRenderer:
+         ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
+ 
+     def set_date_ticks(self, x_index):
++        ax = self.payload.ax
+         if x_index is None or len(x_index) == 0:
+             return
+         try:
+             x = pd.DatetimeIndex(pd.to_datetime(x_index)).tz_localize(None)
+         except Exception:
+             locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
+-            self.app.ax.xaxis.set_major_locator(locator)
+-            self.app.ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
++            ax.xaxis.set_major_locator(locator)
++            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+             return
+         x = x.sort_values().unique()
+         if len(x) == 0:
+@@ -183,8 +298,8 @@ class ChartRenderer:
+         if len(x) == 1:
+             locator = mdates.MinuteLocator(interval=30)
+             formatter = mdates.DateFormatter("%Y-%m-%d %H:%M")
+-            self.app.ax.xaxis.set_major_locator(locator)
+-            self.app.ax.xaxis.set_major_formatter(formatter)
++            ax.xaxis.set_major_locator(locator)
++            ax.xaxis.set_major_formatter(formatter)
+             return
+         span = x[-1] - x[0]
+         if span <= pd.Timedelta(days=2):
+@@ -196,8 +311,8 @@ class ChartRenderer:
+         else:
+             years = max(1, int(np.ceil(span.days / 365)))
+             locator = mdates.YearLocator(base=max(1, int(np.ceil(years / 10))))
+-        self.app.ax.xaxis.set_major_locator(locator)
+-        self.app.ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
++        ax.xaxis.set_major_locator(locator)
++        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+ 
+     def set_date_xlim(self, x_index, pad_hours: int = 6):
+         if x_index is None or len(x_index) == 0:
+@@ -214,20 +329,20 @@ class ChartRenderer:
+             pad = pd.Timedelta(hours=pad_hours)
+             left = left - pad
+             right = right + pad
+-        self.app.ax.set_xlim(left, right)
++        self.payload.ax.set_xlim(left, right)
+ 
+     def add_vertical_guides(self, x_positions):
+         if len(x_positions) > 40:
+             return
+         for x in x_positions:
+-            self.app.ax.axvline(x, color=self.C_BORDER, lw=0.5, alpha=0.12, zorder=0, linestyle="--")
++            self.payload.ax.axvline(x, color=self.C_BORDER, lw=0.5, alpha=0.12, zorder=0, linestyle="--")
+ 
+     def to_period_index(self, idx, freq: str):
+         freq_code = self._freq_code(freq)
+         return pd.PeriodIndex(pd.to_datetime(idx).tz_localize(None), freq=freq_code)
+ 
+     def safe_ylim(self, y_min, y_max, pad=0.08, zero_floor=False):
+-        ax = self.app.ax
++        ax = self.payload.ax
+         if not np.isfinite(y_min):
+             y_min = 0.0
+         if not np.isfinite(y_max):
+@@ -276,7 +391,7 @@ class ChartRenderer:
+ 
+     def draw_no_data(self, msg="No data available"):
+         self.style_axes()
+-        self.app.ax.text(0.5, 0.5, msg, color=self.C_TEXT_SUB, ha="center", va="center", transform=self.app.ax.transAxes)
++        self.payload.ax.text(0.5, 0.5, msg, color=self.C_TEXT_SUB, ha="center", va="center", transform=self.payload.ax.transAxes)
+ 
+     def _group_series(self, s, freq: str, agg: str = "last"):
+         return group_series(s, freq, agg)
+@@ -294,8 +409,7 @@ class ChartRenderer:
+         return series_for_balance(s_q, s_a, freq)
+ 
+     def dividend_series(self, freq: str):
+-        divs = getattr(self.app, "df_dividends", None)
+-        return dividend_series(divs, freq)
++        return dividend_series(self.payload.df_dividends, freq)
+ 
+     def to_ttm(self, s):
+         if s is None or s.empty:
+@@ -304,43 +418,35 @@ class ChartRenderer:
+         return s.rolling(4).sum()
+ 
+     def _reset(self):
+-        app = self.app
+-        app._redraw_job = None
+-        if hasattr(app, "txt_chart_ai"):
+-            app._update_chart_ai("Refreshing chart insights...")
+-        if app.anim and app.anim.event_source:
++        p = self.payload
++        if p.on_reset:
++            p.on_reset()
++        self.anim = None
++        if self._ax2 is not None:
+             try:
+-                app.anim.event_source.stop()
++                self._ax2.remove()
+             except Exception:
+                 pass
+-        app.anim = None
+-        if app._ax2 is not None:
+-            try:
+-                app._ax2.remove()
+-            except Exception:
+-                pass
+-            app._ax2 = None
++            self._ax2 = None
+         try:
+-            for extra_ax in list(app.fig.axes):
+-                if extra_ax is not app.ax:
++            for extra_ax in list(p.fig.axes):
++                if extra_ax is not p.ax:
+                     extra_ax.remove()
+         except Exception:
+             pass
+-        app.ax.clear()
+-        if hasattr(app, "lbl_price_change"):
+-            app.lbl_price_change.configure(text="")
++        p.ax.clear()
+ 
+     def _legend(self, handles=None, labels=None):
+         if handles is not None and labels is not None:
+-            self.app.ax.legend(handles, labels, loc="upper left", frameon=False, fontsize=8)
++            self.payload.ax.legend(handles, labels, loc="upper left", frameon=False, fontsize=8)
+         else:
+-            self.app.ax.legend(loc="upper left", frameon=False, fontsize=8)
++            self.payload.ax.legend(loc="upper left", frameon=False, fontsize=8)
+ 
+     def render(self):
+         self._reset()
+-        app = self.app
+-        mode = app.chart_var.get()
+-        freq = app.freq_var.get()
++        p = self.payload
++        mode = p.mode
++        freq = p.freq
+         dispatch = {
+             "Price": lambda: self._render_price(),
+             "Revenue & EBITDA": lambda: self._render_revenue_ebitda(freq),
+@@ -358,20 +464,23 @@ class ChartRenderer:
+             handler()
+         else:
+             self.draw_no_data("Unsupported chart mode")
+-            apply_chart_layout(app.fig)
+-        app.canvas.draw_idle()
++            apply_chart_layout(p.fig)
++        if p.on_draw_idle:
++            p.on_draw_idle()
+ 
+     def _render_price(self):
+-        app = self.app
+-        app.lbl_price_change.configure(text="")
+-        desired = price_period_to_yf(app.price_range_var.get())
+-        if app.hist_period != desired:
+-            app.ensure_history_period(desired)
+-            self.draw_no_data(f"Loading {app.price_range_var.get()} data...")
++        p = self.payload
++        if p.on_price_change:
++            p.on_price_change("", self.C_TEXT_SEC)
++        desired = price_period_to_yf(p.price_range)
++        if p.hist_period != desired:
++            if p.on_ensure_history_period:
++                p.on_ensure_history_period(desired)
++            self.draw_no_data(f"Loading {p.price_range} data...")
+             return
+-        base = app.hist_data
++        base = p.hist_data
+         if (base is None or base.empty) and desired == "max":
+-            hist = getattr(app, "hist_data_long", None)
++            hist = p.hist_data_long
+             if hist is not None and not hist.empty:
+                 base = hist
+         if base is None or base.empty:
+@@ -380,7 +489,7 @@ class ChartRenderer:
+         valid_data = base[base["Close"] > 0].copy()
+         if valid_data.empty:
+             self.draw_no_data("No Price Data")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         x = valid_data.index
+         y = valid_data["Close"].values.astype(float)
+@@ -399,16 +508,16 @@ class ChartRenderer:
+         line_kwargs = {"color": self.C_ACCENT, "linewidth": 1.8}
+         if len(x) == 1:
+             line_kwargs.update({"marker": "o", "markersize": 5})
+-        line, = app.ax.plot([], [], **line_kwargs)
++        line, = p.ax.plot([], [], **line_kwargs)
+         line.set_data(x[:1], y[:1])
+         if "SMA_50" in valid_data.columns:
+             s50 = pd.to_numeric(valid_data["SMA_50"], errors="coerce").reindex(x)
+             if np.isfinite(s50.values).any():
+-                app.ax.plot(x, s50.values, color=self.C_GREEN, linewidth=1.0, alpha=0.8, label="SMA 50")
++                p.ax.plot(x, s50.values, color=self.C_GREEN, linewidth=1.0, alpha=0.8, label="SMA 50")
+         if "SMA_200" in valid_data.columns:
+             s200 = pd.to_numeric(valid_data["SMA_200"], errors="coerce").reindex(x)
+             if np.isfinite(s200.values).any():
+-                app.ax.plot(x, s200.values, color=self.C_YELLOW, linewidth=1.0, alpha=0.8, label="SMA 200")
++                p.ax.plot(x, s200.values, color=self.C_YELLOW, linewidth=1.0, alpha=0.8, label="SMA 200")
+         y_min = np.nanmin(y)
+         y_max = np.nanmax(y)
+         if np.isfinite(y_min) and np.isfinite(y_max) and y_min > 0 and y_max > 0 and (y_max / y_min) > 50:
+@@ -419,11 +528,12 @@ class ChartRenderer:
+         self.set_date_xlim(x, pad_hours=6)
+         if len(y) >= 2 and y[0] != 0:
+             pct = (y[-1] - y[0]) / abs(y[0]) * 100
+-            app.lbl_price_change.configure(
+-                text=f"{app.price_range_var.get()} Change: {pct:+.2f}%",
+-                text_color=self.C_GREEN if pct >= 0 else self.C_RED,
+-            )
+-        if app.anim_enabled.get():
++            if p.on_price_change:
++                p.on_price_change(
++                    f"{p.price_range} Change: {pct:+.2f}%",
++                    self.C_GREEN if pct >= 0 else self.C_RED,
++                )
++        if p.anim_enabled:
+             def update(frame):
+                 if len(x) == 0:
+                     return line,
+@@ -432,34 +542,35 @@ class ChartRenderer:
+                 limit = max(1, min(len(x), limit))
+                 line.set_data(x[:limit], y[:limit])
+                 return line,
+-            app.anim = animation.FuncAnimation(
+-                app.fig, update, frames=self.anim_frames + 5, interval=20, blit=False, repeat=False
+-            )
++            self._set_anim(animation.FuncAnimation(
++                p.fig, update, frames=self.anim_frames + 5, interval=20, blit=False, repeat=False
++            ))
+         else:
+             line.set_data(x, y)
+-            app.ax.fill_between(x, y, color=self.C_ACCENT, alpha=0.08)
+-        handles, labels = app.ax.get_legend_handles_labels()
+-        if app._ax2 is not None:
+-            h2, l2 = app._ax2.get_legend_handles_labels()
++            p.ax.fill_between(x, y, color=self.C_ACCENT, alpha=0.08)
++        handles, labels = p.ax.get_legend_handles_labels()
++        if self._ax2 is not None:
++            h2, l2 = self._ax2.get_legend_handles_labels()
+             handles += h2
+             labels += l2
+         if handles:
+             self._legend(handles, labels)
+         summary = self.series_stats(y, "Price", "$")
+-        app._set_chart_analysis(f"Price|{app.price_range_var.get()}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"Price|{p.price_range}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_revenue_ebitda(self, freq: str):
+-        app = self.app
+-        rev_q = app.get_series(app.df_fin_q, ["TotalRevenue", "OperatingRevenue", "Revenue"])
+-        rev_a = app.get_series(app.df_fin_a, ["TotalRevenue", "OperatingRevenue", "Revenue"])
+-        ebitda_q = app.get_series(app.df_fin_q, ["EBITDA", "NormalizedEBITDA"])
+-        ebitda_a = app.get_series(app.df_fin_a, ["EBITDA", "NormalizedEBITDA"])
++        p = self.payload
++        rev_q = self._get_series(p.df_fin_q, ["TotalRevenue", "OperatingRevenue", "Revenue"])
++        rev_a = self._get_series(p.df_fin_a, ["TotalRevenue", "OperatingRevenue", "Revenue"])
++        ebitda_q = self._get_series(p.df_fin_q, ["EBITDA", "NormalizedEBITDA"])
++        ebitda_a = self._get_series(p.df_fin_a, ["EBITDA", "NormalizedEBITDA"])
+         ebitda_label = "EBITDA"
+         if ebitda_q is None or ebitda_q.empty:
+-            ebitda_q = app.get_series(app.df_fin_q, ["OperatingIncome", "OperatingIncomeLoss", "EBIT"])
++            ebitda_q = self._get_series(p.df_fin_q, ["OperatingIncome", "OperatingIncomeLoss", "EBIT"])
+         if ebitda_a is None or ebitda_a.empty:
+-            ebitda_a = app.get_series(app.df_fin_a, ["OperatingIncome", "OperatingIncomeLoss", "EBIT"])
++            ebitda_a = self._get_series(p.df_fin_a, ["OperatingIncome", "OperatingIncomeLoss", "EBIT"])
+         if (ebitda_q is not None and not ebitda_q.empty) or (ebitda_a is not None and not ebitda_a.empty):
+             if ebitda_a is None and ebitda_q is not None:
+                 ebitda_label = "Operating Income"
+@@ -467,7 +578,7 @@ class ChartRenderer:
+         ebitda = self.series_for_flow(ebitda_q, ebitda_a, freq)
+         if rev is None:
+             self.draw_no_data("Revenue data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         dates, vals_rev, vals_ebitda = self.align_data(
+             rev / 1e9,
+@@ -480,15 +591,15 @@ class ChartRenderer:
+         vals_ebitda = np.nan_to_num(vals_ebitda, nan=0.0, posinf=0.0, neginf=0.0)
+         if len(dates) == 0:
+             self.draw_no_data("Revenue data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         x_idx = np.arange(len(dates))
+         self.style_axes("REVENUE & EBITDA", "USD ($B)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
+         self.add_vertical_guides(x_idx)
+         show_ebitda = has_ebitda and np.nanmax(np.abs(vals_ebitda)) > 0
+-        bars = app.ax.bar(x_idx, [0] * len(dates), color=self.C_SERIES_NEUTRAL, label="Revenue")
++        bars = p.ax.bar(x_idx, [0] * len(dates), color=self.C_SERIES_NEUTRAL, label="Revenue")
+         ebitda_line = None
+         use_twin = False
+         if show_ebitda:
+@@ -498,24 +609,24 @@ class ChartRenderer:
+                 ratio = max(rev_max, ebitda_max) / min(rev_max, ebitda_max)
+                 use_twin = ratio >= 6
+             if use_twin:
+-                app._ax2 = app.ax.twinx()
+-                app._ax2.set_facecolor("none")
+-                self.apply_axes_frame(app._ax2)
+-                app._ax2.tick_params(axis="y", colors=self.C_GREEN, labelsize=9)
+-                app._ax2.set_ylabel(f"{ebitda_label} ($B)", color=self.C_GREEN)
+-                ebitda_line, = app._ax2.plot([], [], color=self.C_GREEN, marker="o", label=ebitda_label, linewidth=2)
++                ax2 = self._create_ax2()
++                ax2.set_facecolor("none")
++                self.apply_axes_frame(ax2)
++                ax2.tick_params(axis="y", colors=self.C_GREEN, labelsize=9)
++                ax2.set_ylabel(f"{ebitda_label} ($B)", color=self.C_GREEN)
++                ebitda_line, = ax2.plot([], [], color=self.C_GREEN, marker="o", label=ebitda_label, linewidth=2)
+             else:
+-                ebitda_line, = app.ax.plot([], [], color=self.C_GREEN, marker="o", label=ebitda_label, linewidth=2)
++                ebitda_line, = p.ax.plot([], [], color=self.C_GREEN, marker="o", label=ebitda_label, linewidth=2)
+         y_max = max(vals_rev.max() if len(vals_rev) else 0, vals_ebitda.max() if show_ebitda else 0)
+         y_min = min(0, vals_rev.min() if len(vals_rev) else 0, vals_ebitda.min() if show_ebitda else 0)
+         self.safe_ylim(y_min, y_max, pad=0.15, zero_floor=True)
+-        app.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
+-        if app._ax2 is not None:
++        p.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
++        if self._ax2 is not None:
+             emax = np.nanmax(np.abs(vals_ebitda)) if len(vals_ebitda) else 0
+             if not np.isfinite(emax) or emax <= 0:
+                 emax = 1.0
+-            app._ax2.set_ylim(-emax * 1.2 if np.nanmin(vals_ebitda) < 0 else 0, emax * 1.2)
+-        if app.anim_enabled.get():
++            self._ax2.set_ylim(-emax * 1.2 if np.nanmin(vals_ebitda) < 0 else 0, emax * 1.2)
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 for rect, h in zip(bars, vals_rev):
+@@ -525,15 +636,15 @@ class ChartRenderer:
+                     limit = max(1, min(len(dates), limit))
+                     ebitda_line.set_data(x_idx[:limit], vals_ebitda[:limit])
+                 return bars
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             for rect, h in zip(bars, vals_rev):
+                 rect.set_height(h)
+             if show_ebitda and ebitda_line is not None:
+                 ebitda_line.set_data(x_idx, vals_ebitda)
+-        handles, labels = app.ax.get_legend_handles_labels()
+-        if app._ax2 is not None:
+-            h2, l2 = app._ax2.get_legend_handles_labels()
++        handles, labels = p.ax.get_legend_handles_labels()
++        if self._ax2 is not None:
++            h2, l2 = self._ax2.get_legend_handles_labels()
+             handles += h2
+             labels += l2
+         self._legend(handles, labels)
+@@ -541,22 +652,23 @@ class ChartRenderer:
+             self.series_stats(vals_rev, "Revenue", "B"),
+             self.series_stats(vals_ebitda, ebitda_label, "B") if show_ebitda else f"{ebitda_label}: no data.",
+         ])
+-        app._set_chart_analysis(f"Revenue & EBITDA|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"Revenue & EBITDA|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_eps_dividends(self, freq: str):
+-        app = self.app
+-        eps_q = app.get_series(app.df_fin_q, ["BasicEPS", "DilutedEPS"])
+-        eps_a = app.get_series(app.df_fin_a, ["BasicEPS", "DilutedEPS"])
++        p = self.payload
++        eps_q = self._get_series(p.df_fin_q, ["BasicEPS", "DilutedEPS"])
++        eps_a = self._get_series(p.df_fin_a, ["BasicEPS", "DilutedEPS"])
+         eps = self.series_for_flow(eps_q, eps_a, freq)
+         if eps is None:
+             self.draw_no_data("EPS data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         df = pd.DataFrame({"eps": eps}).sort_index()
+         if df["eps"].dropna().empty:
+             self.draw_no_data("EPS data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         div_s = self.dividend_series(freq)
+         if freq == "Annual":
+@@ -587,18 +699,18 @@ class ChartRenderer:
+         y_div = np.nan_to_num(df["div"].values.astype(float), nan=0.0, posinf=0.0, neginf=0.0) if "div" in df.columns else None
+         self.style_axes("EPS & DIVIDENDS", "Per Share ($)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
+-        app.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
+         self.add_vertical_guides(x_idx)
+-        eps_line, = app.ax.plot([], [], color=self.C_ACCENT, marker="o", label="EPS", linewidth=2)
++        eps_line, = p.ax.plot([], [], color=self.C_ACCENT, marker="o", label="EPS", linewidth=2)
+         div_bars = None
+         if y_div is not None and np.nanmax(y_div) > 0:
+-            app._ax2 = app.ax.twinx()
+-            app._ax2.set_facecolor("none")
+-            self.apply_axes_frame(app._ax2)
+-            app._ax2.tick_params(axis="y", colors=self.C_YELLOW, labelsize=9)
+-            app._ax2.set_ylabel("Dividends ($)", color=self.C_YELLOW)
+-            div_bars = app._ax2.bar(x_idx, [0] * len(dates), color=self.C_YELLOW, alpha=0.35, label="Dividends")
++            ax2 = self._create_ax2()
++            ax2.set_facecolor("none")
++            self.apply_axes_frame(ax2)
++            ax2.tick_params(axis="y", colors=self.C_YELLOW, labelsize=9)
++            ax2.set_ylabel("Dividends ($)", color=self.C_YELLOW)
++            div_bars = ax2.bar(x_idx, [0] * len(dates), color=self.C_YELLOW, alpha=0.35, label="Dividends")
+         if np.isfinite(y_eps).any():
+             y_max = np.nanmax(y_eps)
+             y_min = np.nanmin(y_eps)
+@@ -606,12 +718,12 @@ class ChartRenderer:
+             y_max = 1.0
+             y_min = 0.0
+         self.safe_ylim(min(0, y_min), y_max, pad=0.2, zero_floor=False)
+-        if app._ax2 is not None:
++        if self._ax2 is not None:
+             div_max = y_div.max() if len(y_div) else 0
+             if not np.isfinite(div_max) or div_max <= 0:
+                 div_max = 1.0
+-            app._ax2.set_ylim(0, div_max * 1.25)
+-        if app.anim_enabled.get():
++            self._ax2.set_ylim(0, div_max * 1.25)
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 limit = int(prog * len(dates))
+@@ -621,49 +733,50 @@ class ChartRenderer:
+                     for rect, h in zip(div_bars, y_div):
+                         rect.set_height(h * prog)
+                 return eps_line,
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             eps_line.set_data(x_idx, y_eps)
+             if div_bars is not None:
+                 for rect, h in zip(div_bars, y_div):
+                     rect.set_height(h)
+-        handles, labels = app.ax.get_legend_handles_labels()
+-        if app._ax2 is not None:
+-            h2, l2 = app._ax2.get_legend_handles_labels()
++        handles, labels = p.ax.get_legend_handles_labels()
++        if self._ax2 is not None:
++            h2, l2 = self._ax2.get_legend_handles_labels()
+             handles += h2
+             labels += l2
+         self._legend(handles, labels)
+         summary = self.series_stats(y_eps, "EPS", "")
+         if y_div is not None:
+             summary += "\n" + self.series_stats(y_div, "Dividends", "")
+-        app._set_chart_analysis(f"EPS & Dividends|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"EPS & Dividends|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_cash_vs_debt(self, freq: str):
+-        app = self.app
+-        cash_q = app.get_series(app.df_bal_q, ["CashAndCashEquivalents", "Cash"])
+-        cash_a = app.get_series(app.df_bal_a, ["CashAndCashEquivalents", "Cash"])
+-        debt_q = app.get_series(app.df_bal_q, ["TotalDebt", "LongTermDebt"])
+-        debt_a = app.get_series(app.df_bal_a, ["TotalDebt", "LongTermDebt"])
++        p = self.payload
++        cash_q = self._get_series(p.df_bal_q, ["CashAndCashEquivalents", "Cash"])
++        cash_a = self._get_series(p.df_bal_a, ["CashAndCashEquivalents", "Cash"])
++        debt_q = self._get_series(p.df_bal_q, ["TotalDebt", "LongTermDebt"])
++        debt_a = self._get_series(p.df_bal_a, ["TotalDebt", "LongTermDebt"])
+         cash = self.series_for_balance(cash_q, cash_a, freq)
+         debt = self.series_for_balance(debt_q, debt_a, freq)
+         if cash is None:
+             self.draw_no_data("Cash/Debt data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         dates, v_cash, v_debt = self.align_data(cash / 1e9, debt / 1e9 if debt is not None else None, freq=freq)
+         if len(dates) == 0:
+             self.draw_no_data("Cash/Debt data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         x_idx = np.arange(len(dates))
+         v_cash = np.nan_to_num(v_cash.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+         v_debt = np.nan_to_num(v_debt.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+         self.style_axes("CASH vs DEBT", "USD ($B)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
+         self.add_vertical_guides(x_idx)
+-        l1, = app.ax.plot([], [], color=self.C_GREEN, marker="o", label="Cash")
++        l1, = p.ax.plot([], [], color=self.C_GREEN, marker="o", label="Cash")
+         l2 = None
+         use_twin = False
+         if debt is not None:
+@@ -673,22 +786,22 @@ class ChartRenderer:
+                 ratio = max(cash_max, debt_max) / min(cash_max, debt_max)
+                 use_twin = ratio >= 6
+             if use_twin:
+-                app._ax2 = app.ax.twinx()
+-                app._ax2.set_facecolor("none")
+-                self.apply_axes_frame(app._ax2)
+-                app._ax2.tick_params(axis="y", colors=self.C_RED, labelsize=9)
+-                app._ax2.set_ylabel("Debt ($B)", color=self.C_RED)
+-                l2, = app._ax2.plot([], [], color=self.C_RED, marker="x", label="Debt")
++                ax2 = self._create_ax2()
++                ax2.set_facecolor("none")
++                self.apply_axes_frame(ax2)
++                ax2.tick_params(axis="y", colors=self.C_RED, labelsize=9)
++                ax2.set_ylabel("Debt ($B)", color=self.C_RED)
++                l2, = ax2.plot([], [], color=self.C_RED, marker="x", label="Debt")
+             else:
+-                l2, = app.ax.plot([], [], color=self.C_RED, marker="x", label="Debt")
++                l2, = p.ax.plot([], [], color=self.C_RED, marker="x", label="Debt")
+         max_val = max(v_cash.max() if len(v_cash) > 0 else 0, v_debt.max() if len(v_debt) > 0 else 0)
+         self.safe_ylim(0, max_val, pad=0.2, zero_floor=True)
+-        if app._ax2 is not None:
++        if self._ax2 is not None:
+             dmax = np.nanmax(np.abs(v_debt)) if len(v_debt) else 0
+             if not np.isfinite(dmax) or dmax <= 0:
+                 dmax = 1.0
+-            app._ax2.set_ylim(0, dmax * 1.2)
+-        if app.anim_enabled.get():
++            self._ax2.set_ylim(0, dmax * 1.2)
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 limit = int(prog * len(dates))
+@@ -697,14 +810,14 @@ class ChartRenderer:
+                 if l2 is not None:
+                     l2.set_data(x_idx[:limit], v_debt[:limit])
+                 return l1,
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             l1.set_data(x_idx, v_cash)
+             if l2 is not None:
+                 l2.set_data(x_idx, v_debt)
+-        handles, labels = app.ax.get_legend_handles_labels()
+-        if app._ax2 is not None:
+-            h2, l2 = app._ax2.get_legend_handles_labels()
++        handles, labels = p.ax.get_legend_handles_labels()
++        if self._ax2 is not None:
++            h2, l2 = self._ax2.get_legend_handles_labels()
+             handles += h2
+             labels += l2
+         self._legend(handles, labels)
+@@ -712,24 +825,25 @@ class ChartRenderer:
+             self.series_stats(v_cash, "Cash", "B"),
+             self.series_stats(v_debt, "Debt", "B") if debt is not None else "Debt: no data.",
+         ])
+-        app._set_chart_analysis(f"Cash vs Debt|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"Cash vs Debt|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_margins(self, freq: str):
+-        app = self.app
+-        rev_q = app.get_series(app.df_fin_q, ["TotalRevenue"])
+-        rev_a = app.get_series(app.df_fin_a, ["TotalRevenue"])
++        p = self.payload
++        rev_q = self._get_series(p.df_fin_q, ["TotalRevenue"])
++        rev_a = self._get_series(p.df_fin_a, ["TotalRevenue"])
+         rev = self.series_for_flow(rev_q, rev_a, freq)
+         if rev is None:
+             self.draw_no_data("Margins data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+-        gp_q = app.get_series(app.df_fin_q, ["GrossProfit"])
+-        gp_a = app.get_series(app.df_fin_a, ["GrossProfit"])
+-        op_q = app.get_series(app.df_fin_q, ["OperatingIncome", "OperatingIncomeLoss"])
+-        op_a = app.get_series(app.df_fin_a, ["OperatingIncome", "OperatingIncomeLoss"])
+-        ni_q = app.get_series(app.df_fin_q, ["NetIncome"])
+-        ni_a = app.get_series(app.df_fin_a, ["NetIncome"])
++        gp_q = self._get_series(p.df_fin_q, ["GrossProfit"])
++        gp_a = self._get_series(p.df_fin_a, ["GrossProfit"])
++        op_q = self._get_series(p.df_fin_q, ["OperatingIncome", "OperatingIncomeLoss"])
++        op_a = self._get_series(p.df_fin_a, ["OperatingIncome", "OperatingIncomeLoss"])
++        ni_q = self._get_series(p.df_fin_q, ["NetIncome"])
++        ni_a = self._get_series(p.df_fin_a, ["NetIncome"])
+         gp = self.series_for_flow(gp_q, gp_a, freq)
+         op = self.series_for_flow(op_q, op_a, freq)
+         ni = self.series_for_flow(ni_q, ni_a, freq)
+@@ -740,7 +854,7 @@ class ChartRenderer:
+         df = df.sort_index()
+         if df.empty:
+             self.draw_no_data("Margins data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         periods = self.to_period_index(df.index, freq)
+         dates = self._format_period_labels(periods, freq)
+@@ -750,16 +864,16 @@ class ChartRenderer:
+         x_idx = np.arange(len(dates))
+         self.style_axes("MARGINS", "Percent (%)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
+-        app.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
+         self.add_vertical_guides(x_idx)
+-        l1, = app.ax.plot([], [], color=self.C_YELLOW, label="Gross %")
+-        l2, = app.ax.plot([], [], color=self.C_ACCENT, label="Op %")
+-        l3, = app.ax.plot([], [], color=self.C_GREEN, label="Net %")
++        l1, = p.ax.plot([], [], color=self.C_YELLOW, label="Gross %")
++        l2, = p.ax.plot([], [], color=self.C_ACCENT, label="Op %")
++        l3, = p.ax.plot([], [], color=self.C_GREEN, label="Net %")
+         y_min = min(0, v_net.min(), v_op.min(), v_gross.min())
+         y_max = max(5, v_gross.max(), v_op.max(), v_net.max())
+         self.safe_ylim(y_min, y_max, pad=0.2, zero_floor=False)
+-        if app.anim_enabled.get():
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 limit = int(prog * len(dates))
+@@ -768,7 +882,7 @@ class ChartRenderer:
+                 l2.set_data(x_idx[:limit], v_op[:limit])
+                 l3.set_data(x_idx[:limit], v_net[:limit])
+                 return l1, l2, l3
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             l1.set_data(x_idx, v_gross)
+             l2.set_data(x_idx, v_op)
+@@ -779,44 +893,45 @@ class ChartRenderer:
+             self.series_stats(v_op, "Operating Margin", "%"),
+             self.series_stats(v_net, "Net Margin", "%"),
+         ])
+-        app._set_chart_analysis(f"Margins|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"Margins|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_cash_flow_detail(self, freq: str):
+-        app = self.app
+-        fcf_q = app.get_series(app.df_cf_q, ["FreeCashFlow", "Free Cash Flow"])
+-        fcf_a = app.get_series(app.df_cf_a, ["FreeCashFlow", "Free Cash Flow"])
++        p = self.payload
++        fcf_q = self._get_series(p.df_cf_q, ["FreeCashFlow", "Free Cash Flow"])
++        fcf_a = self._get_series(p.df_cf_a, ["FreeCashFlow", "Free Cash Flow"])
+         fcf = self.series_for_flow(fcf_q, fcf_a, freq)
+         if fcf is None:
+-            ocf_q = app.get_series(app.df_cf_q, ["OperatingCashFlow"])
+-            ocf_a = app.get_series(app.df_cf_a, ["OperatingCashFlow"])
+-            cap_q = app.get_series(app.df_cf_q, ["CapitalExpenditure"])
+-            cap_a = app.get_series(app.df_cf_a, ["CapitalExpenditure"])
++            ocf_q = self._get_series(p.df_cf_q, ["OperatingCashFlow"])
++            ocf_a = self._get_series(p.df_cf_a, ["OperatingCashFlow"])
++            cap_q = self._get_series(p.df_cf_q, ["CapitalExpenditure"])
++            cap_a = self._get_series(p.df_cf_a, ["CapitalExpenditure"])
+             ocf = self.series_for_flow(ocf_q, ocf_a, freq)
+             cap = self.series_for_flow(cap_q, cap_a, freq)
+             if ocf is not None and cap is not None:
+                 fcf = ocf - cap.abs()
+-        sbc_q = app.get_series(app.df_cf_q, ["StockBasedCompensation", "ShareBasedCompensation"])
+-        sbc_a = app.get_series(app.df_cf_a, ["StockBasedCompensation", "ShareBasedCompensation"])
++        sbc_q = self._get_series(p.df_cf_q, ["StockBasedCompensation", "ShareBasedCompensation"])
++        sbc_a = self._get_series(p.df_cf_a, ["StockBasedCompensation", "ShareBasedCompensation"])
+         sbc = self.series_for_flow(sbc_q, sbc_a, freq)
+         if fcf is None:
+             self.draw_no_data("Cash flow data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         dates, v_fcf, v_sbc = self.align_data(fcf / 1e9, sbc / 1e9 if sbc is not None else None, fill_value=0.0, freq=freq)
+         if len(dates) == 0:
+             self.draw_no_data("Cash flow data unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         v_fcf = np.nan_to_num(v_fcf.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+         v_sbc = np.nan_to_num(v_sbc.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+         x_idx = np.arange(len(dates))
+         self.style_axes("CASH FLOW DETAIL", "USD ($B)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
+         self.add_vertical_guides(x_idx)
+-        app.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
+-        bars = app.ax.bar(x_idx, [0] * len(dates), color=self.C_GREEN, label="FCF", alpha=0.6)
++        p.ax.axhline(0, color=self.C_BORDER, lw=1, alpha=0.6)
++        bars = p.ax.bar(x_idx, [0] * len(dates), color=self.C_GREEN, label="FCF", alpha=0.6)
+         sbc_line = None
+         use_twin = False
+         if sbc is not None:
+@@ -826,23 +941,23 @@ class ChartRenderer:
+                 ratio = max(fcf_max, sbc_max) / min(fcf_max, sbc_max)
+                 use_twin = ratio >= 6
+             if use_twin:
+-                app._ax2 = app.ax.twinx()
+-                app._ax2.set_facecolor("none")
+-                self.apply_axes_frame(app._ax2)
+-                app._ax2.tick_params(axis="y", colors=self.C_PINK, labelsize=9)
+-                app._ax2.set_ylabel("SBC ($B)", color=self.C_PINK)
+-                sbc_line, = app._ax2.plot([], [], color=self.C_PINK, marker="o", label="SBC", linewidth=2)
++                ax2 = self._create_ax2()
++                ax2.set_facecolor("none")
++                self.apply_axes_frame(ax2)
++                ax2.tick_params(axis="y", colors=self.C_PINK, labelsize=9)
++                ax2.set_ylabel("SBC ($B)", color=self.C_PINK)
++                sbc_line, = ax2.plot([], [], color=self.C_PINK, marker="o", label="SBC", linewidth=2)
+             else:
+-                sbc_line, = app.ax.plot([], [], color=self.C_PINK, marker="o", label="SBC", linewidth=2)
++                sbc_line, = p.ax.plot([], [], color=self.C_PINK, marker="o", label="SBC", linewidth=2)
+         max_val = max(v_fcf.max() if len(v_fcf) > 0 else 0, v_sbc.max() if len(v_sbc) > 0 else 0)
+         min_val = min(0, v_fcf.min() if len(v_fcf) > 0 else 0, v_sbc.min() if len(v_sbc) > 0 else 0)
+         self.safe_ylim(min_val, max_val, pad=0.2, zero_floor=False)
+-        if app._ax2 is not None:
++        if self._ax2 is not None:
+             smax = np.nanmax(np.abs(v_sbc)) if len(v_sbc) else 0
+             if not np.isfinite(smax) or smax <= 0:
+                 smax = 1.0
+-            app._ax2.set_ylim(-smax * 1.2 if np.nanmin(v_sbc) < 0 else 0, smax * 1.2)
+-        if app.anim_enabled.get():
++            self._ax2.set_ylim(-smax * 1.2 if np.nanmin(v_sbc) < 0 else 0, smax * 1.2)
++        if p.anim_enabled:
+             def update(frame):
+                 if len(dates) == 0:
+                     return bars
+@@ -854,15 +969,15 @@ class ChartRenderer:
+                 if sbc_line is not None:
+                     sbc_line.set_data(x_idx[:limit], v_sbc[:limit])
+                 return bars
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             for rect, h in zip(bars, v_fcf):
+                 rect.set_height(h)
+             if sbc_line is not None:
+                 sbc_line.set_data(x_idx, v_sbc)
+-        handles, labels = app.ax.get_legend_handles_labels()
+-        if app._ax2 is not None:
+-            h2, l2 = app._ax2.get_legend_handles_labels()
++        handles, labels = p.ax.get_legend_handles_labels()
++        if self._ax2 is not None:
++            h2, l2 = self._ax2.get_legend_handles_labels()
+             handles += h2
+             labels += l2
+         self._legend(handles, labels)
+@@ -870,27 +985,28 @@ class ChartRenderer:
+             self.series_stats(v_fcf, "FCF", "B"),
+             self.series_stats(v_sbc, "SBC", "B") if sbc is not None else "SBC: no data.",
+         ])
+-        app._set_chart_analysis(f"Cash Flow Detail|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"Cash Flow Detail|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_valuation(self, mode: str, freq: str):
+-        app = self.app
+-        if app.hist_data is None or app.df_fin_q is None:
++        p = self.payload
++        if p.hist_data is None or p.df_fin_q is None:
+             self.draw_no_data("Insufficient data for valuation")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+-        fin_df = app.get_freq_df("fin")
+-        eps = app.get_series(fin_df, ["BasicEPS"])
+-        rev = app.get_series(fin_df, ["TotalRevenue"])
+-        fcf = app.get_series(app.get_freq_df("cf"), ["FreeCashFlow", "Free Cash Flow"])
+-        shares = app.get_series(app.get_freq_df("bal"), ["ShareIssued", "CommonStockSharesOutstanding"])
+-        price = pd.to_numeric(app.hist_data.get("Close"), errors="coerce")
++        fin_df = self._get_freq_df("fin", freq)
++        eps = self._get_series(fin_df, ["BasicEPS"])
++        rev = self._get_series(fin_df, ["TotalRevenue"])
++        fcf = self._get_series(self._get_freq_df("cf", freq), ["FreeCashFlow", "Free Cash Flow"])
++        shares = self._get_series(self._get_freq_df("bal", freq), ["ShareIssued", "CommonStockSharesOutstanding"])
++        price = pd.to_numeric(p.hist_data.get("Close"), errors="coerce")
+         if freq == "TTM":
+             eps = self.to_ttm(eps)
+             rev = self.to_ttm(rev)
+             fcf = self.to_ttm(fcf)
+         if mode == "Valuation (P/E)" and eps is not None:
+-            aligned_eps = pd.to_numeric(eps.reindex(app.hist_data.index, method="ffill"), errors="coerce")
++            aligned_eps = pd.to_numeric(eps.reindex(p.hist_data.index, method="ffill"), errors="coerce")
+             pe = price / (aligned_eps * 4)
+             pe = pe.replace([np.inf, -np.inf], np.nan)
+             pe = pe[(pe > 0) & (pe < 250)].dropna()
+@@ -898,8 +1014,8 @@ class ChartRenderer:
+             label = "P/E Ratio"
+             color = self.C_ACCENT
+         elif mode == "Valuation (P/S)" and rev is not None and shares is not None:
+-            aligned_rev = pd.to_numeric(rev.reindex(app.hist_data.index, method="ffill"), errors="coerce")
+-            aligned_shares = pd.to_numeric(shares.reindex(app.hist_data.index, method="ffill"), errors="coerce")
++            aligned_rev = pd.to_numeric(rev.reindex(p.hist_data.index, method="ffill"), errors="coerce")
++            aligned_shares = pd.to_numeric(shares.reindex(p.hist_data.index, method="ffill"), errors="coerce")
+             ps = (price * aligned_shares) / (aligned_rev * 4)
+             ps = ps.replace([np.inf, -np.inf], np.nan)
+             ps = ps[(ps > 0) & (ps < 50)].dropna()
+@@ -907,8 +1023,8 @@ class ChartRenderer:
+             label = "P/S Ratio"
+             color = self.C_YELLOW
+         elif mode == "Valuation (FCF Yield)" and fcf is not None and shares is not None:
+-            aligned_fcf = pd.to_numeric(fcf.reindex(app.hist_data.index, method="ffill"), errors="coerce")
+-            aligned_shares = pd.to_numeric(shares.reindex(app.hist_data.index, method="ffill"), errors="coerce")
++            aligned_fcf = pd.to_numeric(fcf.reindex(p.hist_data.index, method="ffill"), errors="coerce")
++            aligned_shares = pd.to_numeric(shares.reindex(p.hist_data.index, method="ffill"), errors="coerce")
+             mcap = price * aligned_shares
+             fy = ((aligned_fcf * 4) / mcap.replace(0, np.nan)) * 100
+             fy = fy.replace([np.inf, -np.inf], np.nan).dropna()
+@@ -919,46 +1035,47 @@ class ChartRenderer:
+             series = None
+         if series is None or series.empty:
+             self.draw_no_data("Insufficient data for valuation")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         x = series.index
+         y = np.nan_to_num(series.values.astype(float), nan=np.nan, posinf=np.nan, neginf=np.nan)
+         self.style_axes(label.upper(), label)
+         self.set_date_ticks(x)
+-        line, = app.ax.plot([], [], color=color, label=label, linewidth=1.8)
++        line, = p.ax.plot([], [], color=color, label=label, linewidth=1.8)
+         self.set_date_xlim(x, pad_hours=24)
+         self.safe_ylim(np.nanmin(y), np.nanmax(y), pad=0.15, zero_floor=False)
+-        if app.anim_enabled.get():
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 limit = int(prog * len(x))
+                 limit = max(1, min(len(x), limit))
+                 line.set_data(x[:limit], y[:limit])
+                 return line,
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             line.set_data(x, y)
+         self._legend()
+         summary = self.series_stats(y, label, "")
+-        app._set_chart_analysis(f"{label}|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"{label}|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+     def _render_fcf_per_share(self, freq: str):
+-        app = self.app
+-        fcf_q = app.get_series(app.df_cf_q, ["FreeCashFlow", "Free Cash Flow"])
+-        fcf_a = app.get_series(app.df_cf_a, ["FreeCashFlow", "Free Cash Flow"])
+-        shares_q = app.get_series(app.df_bal_q, ["ShareIssued", "CommonStockSharesOutstanding"])
+-        shares_a = app.get_series(app.df_bal_a, ["ShareIssued", "CommonStockSharesOutstanding"])
++        p = self.payload
++        fcf_q = self._get_series(p.df_cf_q, ["FreeCashFlow", "Free Cash Flow"])
++        fcf_a = self._get_series(p.df_cf_a, ["FreeCashFlow", "Free Cash Flow"])
++        shares_q = self._get_series(p.df_bal_q, ["ShareIssued", "CommonStockSharesOutstanding"])
++        shares_a = self._get_series(p.df_bal_a, ["ShareIssued", "CommonStockSharesOutstanding"])
+         fcf = self.series_for_flow(fcf_q, fcf_a, freq)
+         shares = self.series_for_balance(shares_q, shares_a, freq)
+         if fcf is None or shares is None:
+             self.draw_no_data("FCF/share unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         try:
+             fps = (fcf / shares).replace([np.inf, -np.inf], np.nan)
+         except Exception:
+-            fps = app.safe_div(fcf, shares)
++            fps = self._safe_div(fcf, shares)
+         if not isinstance(fps, pd.Series):
+             try:
+                 fps = pd.Series(fps)
+@@ -967,7 +1084,7 @@ class ChartRenderer:
+         df = pd.DataFrame({"fps": fps}).dropna().sort_index() if fps is not None else pd.DataFrame()
+         if df.empty:
+             self.draw_no_data("FCF/share unavailable")
+-            apply_chart_layout(app.fig)
++            apply_chart_layout(p.fig)
+             return
+         periods = self.to_period_index(df.index, freq)
+         dates = self._format_period_labels(periods, freq)
+@@ -975,25 +1092,29 @@ class ChartRenderer:
+         y = np.nan_to_num(df["fps"].values.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+         self.style_axes("FCF PER SHARE", "Per Share ($)")
+         self.set_period_ticks(x_idx, dates)
+-        app.ax.set_xlim(-0.5, len(dates) - 0.5)
++        p.ax.set_xlim(-0.5, len(dates) - 0.5)
+         self.add_vertical_guides(x_idx)
+-        line, = app.ax.plot([], [], color=self.C_GREEN, marker="o", label="FCF/Share", linewidth=2)
++        line, = p.ax.plot([], [], color=self.C_GREEN, marker="o", label="FCF/Share", linewidth=2)
+         self.safe_ylim(min(0, y.min()), max(0.1, y.max()), pad=0.2, zero_floor=False)
+-        if app.anim_enabled.get():
++        if p.anim_enabled:
+             def update(frame):
+                 prog = min(1.0, (frame + 1) / self.anim_frames)
+                 limit = int(prog * len(x_idx))
+                 limit = max(1, min(len(x_idx), limit))
+                 line.set_data(x_idx[:limit], y[:limit])
+                 return line,
+-            app.anim = animation.FuncAnimation(app.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False)
++            self._set_anim(animation.FuncAnimation(p.fig, update, frames=self.anim_frames, interval=20, blit=False, repeat=False))
+         else:
+             line.set_data(x_idx, y)
+         self._legend()
+         summary = self.series_stats(y, "FCF/Share", "")
+-        app._set_chart_analysis(f"FCF/Share|{freq}", summary)
+-        apply_chart_layout(app.fig)
++        if p.on_analysis:
++            p.on_analysis(f"FCF/Share|{freq}", summary)
++        apply_chart_layout(p.fig)
+ 
+-def redraw_chart_now(app, *, palette, anim_frames):
+-    renderer = ChartRenderer(app, palette=palette, anim_frames=anim_frames)
++
++def redraw_chart_now(payload_or_app, *, palette, anim_frames):
++    payload = payload_or_app if isinstance(payload_or_app, ChartPayload) else ChartPayload.from_app(payload_or_app)
++    renderer = ChartRenderer(payload, palette=palette, anim_frames=anim_frames)
+     renderer.render()
++
+diff --git a/compounderos_app/config.py b/compounderos_app/config.py
+index 10a6600..2bd8dfd 100644
+--- a/compounderos_app/config.py
++++ b/compounderos_app/config.py
+@@ -5,7 +5,10 @@ from pathlib import Path
+ 
+ # Base directories
+ COMPOUNDEROS_BASE_DIR = Path(os.environ.get("COMPOUNDEROS_BASE_DIR", Path.home() / "CompounderOS"))
+-COMPOUNDEROS_BASE_DIR.mkdir(parents=True, exist_ok=True)
++try:
++    COMPOUNDEROS_BASE_DIR.mkdir(parents=True, exist_ok=True)
++except OSError:
++    pass
+ 
+ BASE_DIR = str(COMPOUNDEROS_BASE_DIR)
+ LOG_DIR = str(COMPOUNDEROS_BASE_DIR / "logs")
+diff --git a/compounderos_app/test_charts_payload.py b/compounderos_app/test_charts_payload.py
+new file mode 100644
+index 0000000..f5538f7
+--- /dev/null
++++ b/compounderos_app/test_charts_payload.py
+@@ -0,0 +1,125 @@
++import ast
++import os
++from dataclasses import is_dataclass
++import matplotlib
++matplotlib.use("Agg")
++from matplotlib.figure import Figure
++import numpy as np
++import pandas as pd
++
++import compounderos_app.charts as charts_mod
++from compounderos_app.config import CONFIG_FILE
++
++REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++PALETTE = {
++    "C_ACCENT": "#38bdf8",
++    "C_BORDER": "#334155",
++    "C_GREEN": "#22c55e",
++    "C_RED": "#ef4444",
++    "C_YELLOW": "#eab308",
++    "C_PINK": "#ec4899",
++    "C_BG_CARD": "#0f172a",
++    "C_TEXT_MAIN": "#f8fafc",
++    "C_TEXT_SUB": "#94a3b8",
++    "C_PLOT_FRAME": "#1e293b",
++    "C_SERIES_NEUTRAL": "#64748b",
++}
++
++
++def test_chart_payload_dataclass_and_no_self_app_in_renderer():
++    assert hasattr(charts_mod, "ChartPayload"), "ChartPayload dataclass must exist in compounderos_app.charts"
++    ChartPayload = charts_mod.ChartPayload
++    assert is_dataclass(ChartPayload)
++
++    # AST proof: ChartRenderer must have zero self.app attribute accesses (Invariant 8)
++    charts_path = os.path.join(REPO_ROOT, "compounderos_app", "charts.py")
++    with open(charts_path, "r", encoding="utf-8") as f:
++        tree = ast.parse(f.read(), filename=charts_path)
++
++    renderer_cls = next(
++        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ChartRenderer"
++    )
++    self_app_refs = [
++        node.lineno
++        for node in ast.walk(renderer_cls)
++        if isinstance(node, ast.Attribute)
++        and isinstance(node.value, ast.Name)
++        and node.value.id == "self"
++        and node.attr == "app"
++    ]
++    assert self_app_refs == [], f"ChartRenderer still accesses self.app at lines: {self_app_refs}"
++
++    # Render directly from ChartPayload without any GUI App instance
++    fig = Figure(figsize=(6, 4))
++    ax = fig.add_subplot(111)
++    dates_d = pd.date_range("2025-01-01", periods=30, freq="D")
++    hist_df = pd.DataFrame(
++        {"Close": np.linspace(150.0, 180.0, 30), "SMA_50": np.linspace(148.0, 175.0, 30)},
++        index=dates_d,
++    )
++    dates_q = pd.date_range("2024-03-31", periods=4, freq="QE")
++    fin_q = pd.DataFrame(
++        {
++            "TotalRevenue": [10e9, 11e9, 12e9, 13e9],
++            "EBITDA": [3e9, 3.2e9, 3.5e9, 4e9],
++            "GrossProfit": [6e9, 6.6e9, 7.2e9, 7.8e9],
++            "OperatingIncome": [2.5e9, 2.7e9, 3.0e9, 3.4e9],
++            "NetIncome": [2.0e9, 2.2e9, 2.4e9, 2.8e9],
++            "BasicEPS": [1.5, 1.6, 1.7, 1.9],
++        },
++        index=dates_q,
++    )
++    bal_q = pd.DataFrame(
++        {
++            "CashAndCashEquivalents": [20e9, 21e9, 22e9, 24e9],
++            "TotalDebt": [10e9, 10e9, 9.5e9, 9.0e9],
++            "CommonStockSharesOutstanding": [1e9, 1e9, 1e9, 1e9],
++        },
++        index=dates_q,
++    )
++    cf_q = pd.DataFrame(
++        {
++            "FreeCashFlow": [2.2e9, 2.4e9, 2.6e9, 3.0e9],
++            "StockBasedCompensation": [0.3e9, 0.3e9, 0.35e9, 0.4e9],
++        },
++        index=dates_q,
++    )
++
++    recorded_summaries = []
++    for mode in ("Price", "Revenue & EBITDA", "Margins (Gross/Op/Net)", "FCF Per Share"):
++        payload = ChartPayload(
++            fig=fig,
++            ax=ax,
++            mode=mode,
++            freq="Quarterly",
++            price_range="1Y",
++            hist_period="1y",
++            hist_data=hist_df,
++            df_fin_q=fin_q,
++            df_bal_q=bal_q,
++            df_cf_q=cf_q,
++            anim_enabled=False,
++            on_analysis=lambda key, summary: recorded_summaries.append((key, summary)),
++        )
++        renderer = charts_mod.ChartRenderer(payload, palette=PALETTE, anim_frames=10)
++        renderer.render()
++
++    assert len(recorded_summaries) == 4
++
++
++def test_gitignore_covers_build_artifacts():
++    gitignore_path = os.path.join(REPO_ROOT, ".gitignore")
++    with open(gitignore_path, "r", encoding="utf-8") as f:
++        content = f.read()
++    for required in ("venv/", "build/", "dist/", ".pytest_cache/", ".hypothesis/", "repomix-output.xml"):
++        assert required in content, f"Missing {required} in .gitignore"
++
++
++def test_diag_gemini_uses_canonical_config_path():
++    diag_path = os.path.join(REPO_ROOT, "diag_gemini.py")
++    with open(diag_path, "r", encoding="utf-8") as f:
++        src = f.read()
++    assert "from compounderos_app.config import CONFIG_FILE" in src, "diag_gemini.py must resolve config via compounderos_app.config.CONFIG_FILE"
++    assert os.path.normpath(str(CONFIG_FILE)).endswith(".compounderos_config.json")
++
+diff --git a/diag_gemini.py b/diag_gemini.py
+index 7281d2e..27f3b1c 100644
+--- a/diag_gemini.py
++++ b/diag_gemini.py
+@@ -12,8 +12,11 @@ import os
+ import json
+ import sys
+ 
++from compounderos_app.config import CONFIG_FILE
++
+ HOME = os.path.expanduser("~")
+-CONFIG_FILE = os.path.join(HOME, "CompounderOS", ".compounderos_config.json")
++
++
+ 
+ 
+ def load_key_and_model():

@@ -1,0 +1,27 @@
+compounderos_app/test_charts_payload.py::test_chart_payload_dataclass_and_no_self_app_in_renderer FAILED
+compounderos_app/test_charts_payload.py::test_diag_gemini_uses_canonical_config_path FAILED
+compounderos_app/test_charts_payload.py::test_gitignore_covers_build_artifacts PASSED
+
+============================================================
+FAILURES / ERRORS
+============================================================
+--- compounderos_app/test_charts_payload.py::test_chart_payload_dataclass_and_no_self_app_in_renderer ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_charts_payload.py", line 31, in test_chart_payload_dataclass_and_no_self_app_in_renderer
+    assert hasattr(charts_mod, "ChartPayload"), "ChartPayload dataclass must exist in compounderos_app.charts"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ChartPayload dataclass must exist in compounderos_app.charts
+
+--- compounderos_app/test_charts_payload.py::test_diag_gemini_uses_canonical_config_path ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_charts_payload.py", line 123, in test_diag_gemini_uses_canonical_config_path
+    assert "from compounderos_app.config import CONFIG_FILE" in src, "diag_gemini.py must resolve config via compounderos_app.config.CONFIG_FILE"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: diag_gemini.py must resolve config via compounderos_app.config.CONFIG_FILE
+
+
+=== 1 passed, 0 skipped, 2 failed ===

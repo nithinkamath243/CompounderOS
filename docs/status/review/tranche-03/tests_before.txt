@@ -1,0 +1,46 @@
+compounderos_app/test_lens_boundary_invariant.py::test_bucket_weights_frozen PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_golden_over_real_history SKIPPED (set COMPOUNDEROS_DB to run the real-history golden check)
+compounderos_app/test_lens_boundary_invariant.py::test_golden_synthetic PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_lens_moves_score_but_confidence_and_gates_invariant PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_lens_table_recomputes_hash_and_rejects_invalid PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_no_global_mutation_after_lens PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_pipeline_trajectory_stage_preserves_pure_raw_inputs FAILED
+compounderos_app/test_lens_boundary_invariant.py::test_provenance_stamping PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_snapshot_confidence_monotonicity_same_day FAILED
+compounderos_app/test_lens_boundary_invariant.py::test_trajectory_choke_point PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_validate_lens_contract PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_write_guard_blocks_lens_scores PASSED
+compounderos_app/test_lens_boundary_invariant.py::test_write_guard_blocks_spoofed_registry_hash_and_persists_provenance FAILED
+
+============================================================
+FAILURES / ERRORS
+============================================================
+--- compounderos_app/test_lens_boundary_invariant.py::test_pipeline_trajectory_stage_preserves_pure_raw_inputs ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_lens_boundary_invariant.py", line 393, in test_pipeline_trajectory_stage_preserves_pure_raw_inputs
+    assert derived_key not in stored_raw, f"Derived peer key {derived_key} polluted raw_inputs_json"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Derived peer key median_revision polluted raw_inputs_json
+
+--- compounderos_app/test_lens_boundary_invariant.py::test_snapshot_confidence_monotonicity_same_day ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_lens_boundary_invariant.py", line 348, in test_snapshot_confidence_monotonicity_same_day
+    assert _approx(snap_score, high_conf.composite)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+--- compounderos_app/test_lens_boundary_invariant.py::test_write_guard_blocks_spoofed_registry_hash_and_persists_provenance ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_lens_boundary_invariant.py", line 310, in test_write_guard_blocks_spoofed_registry_hash_and_persists_provenance
+    hist_row = store.conn.execute(
+               ^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: registry_id
+
+
+=== 9 passed, 1 skipped, 3 failed ===

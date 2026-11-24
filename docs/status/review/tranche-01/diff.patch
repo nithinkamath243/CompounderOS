@@ -1,0 +1,134 @@
+commit 13d37e53e525c97520157be4cedd8d0a0a529ae3
+Author: Nithin <nithinkamat@gmail.com>
+Date:   Tue Oct 27 12:52:02 2026 -0700
+
+    CPOS-E-030,E-032: Decouple analytics_v2 top-level imports and add pure-NumPy ScoreBacktester HAC fallback
+    
+    Ledger IDs: E-030, E-032
+    - Remove unconditional top-level statsmodels import in compounderos_app/analytics_v2.py so DipTriggerAnalyzer, IncrementalRoicAnalyzer, and scanner_service.alerts import cleanly without statsmodels/scipy.
+    - Implement deterministic pure-NumPy Newey-West Bartlett HAC fallback and Spearman rank IC in ScoreBacktester.rank_ic_newey_west.
+    - Add unit tests for ScoreBacktester in compounderos_app/test_v2_core.py.
+
+ compounderos_app/analytics_v2.py | 43 ++++++++++++++++++++++++++++++++--------
+ compounderos_app/test_v2_core.py | 32 +++++++++++++++++++++++++++---
+ 2 files changed, 64 insertions(+), 11 deletions(-)
+diff --git a/compounderos_app/analytics_v2.py b/compounderos_app/analytics_v2.py
+index 66f7f3c..91c9a3f 100644
+--- a/compounderos_app/analytics_v2.py
++++ b/compounderos_app/analytics_v2.py
+@@ -4,7 +4,6 @@ from dataclasses import dataclass
+ from typing import Any, Dict, Optional, List, Tuple
+ import pandas as pd
+ import numpy as np
+-import statsmodels.api as sm
+ 
+ from .scoring_engine import score_metrics, DEFAULT_REGISTRY
+ 
+@@ -357,18 +356,46 @@ class ScoreBacktester:
+         return pd.DataFrame(returns)
+ 
+     @staticmethod
+-    def rank_ic_newey_west(predictor: pd.Series, outcome: pd.Series, horizon_months: int):
++    def rank_ic_newey_west(predictor: pd.Series, outcome: pd.Series, horizon_months: int) -> Tuple[Optional[float], Optional[float]]:
+         df = pd.concat({"x": predictor, "y": outcome}, axis=1).dropna()
+         if len(df) < 100:
+             return None, None
+ 
+         rx = df["x"].rank(method="average")
+         ry = df["y"].rank(method="average")
++        ic_val = rx.corr(ry, method="pearson")
++        ic = float(ic_val) if pd.notna(ic_val) else None
++        if ic is None:
++            return None, None
+ 
+-        X = sm.add_constant(rx)
+-        model = sm.OLS(ry, X)
+-        lag = max(0, horizon_months - 1)
+-        results = model.fit(cov_type="HAC", cov_kwds={"maxlags": lag})
++        lag = max(0, int(horizon_months) - 1)
++        try:
++            import statsmodels.api as sm  # type: ignore[import-untyped]
++
++            X_sm = sm.add_constant(rx)
++            model = sm.OLS(ry, X_sm)
++            results = model.fit(cov_type="HAC", cov_kwds={"maxlags": lag})
++            return ic, float(results.tvalues.iloc[1])
++        except ImportError:
++            n = len(df)
++            x_arr = rx.to_numpy(dtype=float)
++            y_arr = ry.to_numpy(dtype=float)
++            X = np.column_stack([np.ones(n, dtype=float), x_arr])
++            beta, _, _, _ = np.linalg.lstsq(X, y_arr, rcond=None)
++            u = y_arr - X @ beta
++            scores = X * u[:, None]
++            omega = scores.T @ scores
++            max_lag = min(lag, n - 1)
++            for ell in range(1, max_lag + 1):
++                weight = 1.0 - (ell / (lag + 1.0))
++                gamma = scores[ell:].T @ scores[:-ell]
++                omega = omega + weight * (gamma + gamma.T)
++            bread = np.linalg.pinv(X.T @ X)
++            dof_scale = n / max(1, n - X.shape[1])
++            cov_hac = dof_scale * (bread @ omega @ bread)
++            var_slope = float(cov_hac[1, 1])
++            if var_slope <= 0.0:
++                return ic, 0.0
++            t_stat = float(beta[1] / math.sqrt(var_slope))
++            return ic, t_stat
+ 
+-        ic = df["x"].corr(df["y"], method="spearman")
+-        return ic, results.tvalues.iloc[1]
+diff --git a/compounderos_app/test_v2_core.py b/compounderos_app/test_v2_core.py
+index 5299883..914714e 100644
+--- a/compounderos_app/test_v2_core.py
++++ b/compounderos_app/test_v2_core.py
+@@ -7,7 +7,7 @@ from datetime import datetime, timezone
+ 
+ from compounderos_app.database import DataStore
+ from compounderos_app.scoring_engine import ScoreResult, score_metrics, DEFAULT_REGISTRY
+-from compounderos_app.analytics_v2 import DipTriggerAnalyzer, IncrementalRoicAnalyzer
++from compounderos_app.analytics_v2 import DipTriggerAnalyzer, IncrementalRoicAnalyzer, ScoreBacktester
+ 
+ def get_dummy_result(score=7.0):
+     return ScoreResult(
+@@ -28,8 +28,11 @@ def test_v1_same_day_rescan():
+     store._migrate_v2()
+     
+     multiples = {'fcf_yield': 0.05}
+-    store.record_quality_result("AAPL", "IT", get_dummy_result(7.0), multiples, {})
+-    store.record_quality_result("AAPL", "IT", get_dummy_result(8.0), multiples, {})
++    raw_inputs = {'roic': 0.22}
++    store.record_quality_result("AAPL", "IT", get_dummy_result(7.0), multiples, raw_inputs)
++    store.record_quality_result("AAPL", "IT", get_dummy_result(8.0), multiples, raw_inputs)
++    # Empty raw_inputs on same day must not overwrite a valid row
++    store.record_quality_result("AAPL", "IT", get_dummy_result(9.0), multiples, {})
+     
+     cur = store.conn.cursor()
+     cur.execute("SELECT score FROM sp500_scores_history WHERE symbol='AAPL'")
+@@ -150,3 +153,26 @@ def test_f_b5_wiring_proof_gate():
+     res_nvda = score_metrics(raw_nvda, registry=DEFAULT_REGISTRY)
+     assert isinstance(res_nvda.composite, float)
+     # Note: On a live DB pull this reproduces exactly 9.35
++
++
++def test_score_backtester_rank_ic_newey_west():
++    rng = np.random.default_rng(42)
++    x = pd.Series(np.linspace(1.0, 10.0, 120))
++    y = pd.Series(0.05 * x + rng.normal(0.0, 0.02, 120))
++
++    ic, t_stat = ScoreBacktester.rank_ic_newey_west(x, y, horizon_months=12)
++    assert ic is not None and t_stat is not None
++    assert 0.85 < ic <= 1.0
++    assert t_stat > 5.0
++
++    # Insufficient sample (< 100 observations) returns (None, None)
++    ic_small, t_small = ScoreBacktester.rank_ic_newey_west(x.iloc[:50], y.iloc[:50], horizon_months=12)
++    assert ic_small is None and t_small is None
++
++
++def test_score_backtester_empty_store_returns_insufficient_sample():
++    store = DataStore(":memory:")
++    bt = ScoreBacktester(store)
++    out = bt.run_backtest(horizon_months=12)
++    assert out == {"error": "insufficient_sample"}
++

@@ -1,0 +1,32 @@
+ERROR collecting compounderos_app/test_v2_core.py: No module named 'statsmodels'
+compounderos_app/test_imports.py::test_imports FAILED
+
+============================================================
+FAILURES / ERRORS
+============================================================
+--- compounderos_app.test_v2_core ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 87, in main
+    __import__(mod_name)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_v2_core.py", line 10, in <module>
+    from compounderos_app.analytics_v2 import DipTriggerAnalyzer, IncrementalRoicAnalyzer, ScoreBacktester
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/analytics_v2.py", line 7, in <module>
+    import statsmodels.api as sm
+ModuleNotFoundError: No module named 'statsmodels'
+
+--- compounderos_app/test_imports.py::test_imports ---
+Traceback (most recent call last):
+  File "/tmp/py312/lib/python3.12/pytest.py", line 123, in main
+    fn(**kwargs)
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/test_imports.py", line 8, in test_imports
+    import scanner_service.pipeline
+  File "/Users/nithinkamath/CompounderOSv2/scanner_service/pipeline.py", line 13, in <module>
+    from scanner_service.alerts import AlertEngine
+  File "/Users/nithinkamath/CompounderOSv2/scanner_service/alerts.py", line 10, in <module>
+    from compounderos_app.analytics_v2 import DipTriggerAnalyzer
+  File "/Users/nithinkamath/CompounderOSv2/compounderos_app/analytics_v2.py", line 7, in <module>
+    import statsmodels.api as sm
+ModuleNotFoundError: No module named 'statsmodels'
+
+
+=== 0 passed, 0 skipped, 2 failed ===
